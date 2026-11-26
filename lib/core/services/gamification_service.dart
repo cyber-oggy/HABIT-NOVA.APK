@@ -166,34 +166,82 @@ class GamificationService {
     {'level': 10, 'title': 'Nova Grandmaster', 'minXP': 18000, 'maxXP': 999999, 'emoji': '🌌', 'color': Color(0xFFEC4899)},
   ];
 
-  /// Restores user's XP, streak, and progress from Cloud Firestore
-  /// so that logging in on any device restores their full progress.
-  static Future<void> restoreFromCloud(String userId) async {
+  /// Restores user's XP and streak from the cloud leaderboard record so that
+  /// logging in on any device restores their progress.
+  ///
+  /// [client] exists so tests can serve a fake Firestore response; production
+  /// calls leave it null and a client is created for the single request.
+  static Future<void> restoreFromCloud(
+    String userId, {
+    http.Client? client,
+  }) async {
     try {
       final cleanId = userId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
       final url = 'https://firestore.googleapis.com/v1/projects/taskflow-c57d8/databases/(default)/documents/community_leaderboard/$cleanId?key=AIzaSyBMPwBRrvllX1AOEAwczp0Xo6fGwg7hr6c';
-      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 4));
+      final http.Client httpClient = client ?? http.Client();
+      final http.Response response;
+      try {
+        response = await httpClient
+            .get(Uri.parse(url))
+            .timeout(const Duration(seconds: 4));
+      } finally {
+        if (client == null) httpClient.close();
+      }
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final fields = data['fields'] as Map<String, dynamic>?;
         if (fields != null) {
-          final cloudXP = int.tryParse(fields['xp']?['integerValue']?.toString() ?? '0') ?? 0;
-          final cloudStreak = int.tryParse(fields['streakDays']?['integerValue']?.toString() ?? '0') ?? 0;
-
-          final prefs = await SharedPreferences.getInstance();
-          final localXP = prefs.getInt(_xpKey(userId)) ?? 0;
-          if (cloudXP > localXP) {
-            await prefs.setInt(_xpKey(userId), cloudXP);
-            totalXPNotifier.value = cloudXP;
-          }
-          if (cloudStreak > 0) {
-            await prefs.setInt('user_${userId}_streak_days', cloudStreak);
-            await prefs.setInt('app_streak_days', cloudStreak);
-          }
+          final cloudXP =
+              int.tryParse(fields['xp']?['integerValue']?.toString() ?? '0') ??
+                  0;
+          final cloudStreak =
+              int.tryParse(
+                    fields['streakDays']?['integerValue']?.toString() ?? '0',
+                  ) ??
+                  0;
+          await applyCloudProgress(
+            userId: userId,
+            cloudXP: cloudXP,
+            cloudStreak: cloudStreak,
+          );
         }
       }
     } catch (e) {
       debugPrint('GamificationService.restoreFromCloud error: $e');
+    }
+  }
+
+  /// Merges a cloud snapshot into local progress without ever losing a day.
+  ///
+  /// The cloud record is a backup, not the source of truth, so both XP and the
+  /// streak are merged as `max(local, cloud)`: a stale leaderboard document can
+  /// never lower what the user earned on this device.
+  ///
+  /// The local completion day (`user_<uid>_streak_last_date_v1` and
+  /// `user_<uid>_streak_last_at_v1`) is deliberately left untouched. The cloud
+  /// record has no day attached, and inventing one would make the freeze and
+  /// missed-day logic act on a day the user never lived.
+  @visibleForTesting
+  static Future<void> applyCloudProgress({
+    required String userId,
+    required int cloudXP,
+    required int cloudStreak,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Mirrors loadXP's starter balance so a restore can't drop a new account
+    // below the 150 XP everyone starts with.
+    final localXP = prefs.getInt(_xpKey(userId)) ?? 150;
+    if (cloudXP > localXP) {
+      await prefs.setInt(_xpKey(userId), cloudXP);
+      totalXPNotifier.value = cloudXP;
+    }
+
+    final localStreak = prefs.getInt('user_${userId}_streak_days') ?? 0;
+    if (cloudStreak > localStreak) {
+      await prefs.setInt('user_${userId}_streak_days', cloudStreak);
+      await prefs.setInt('app_streak_days', cloudStreak);
     }
   }
 
