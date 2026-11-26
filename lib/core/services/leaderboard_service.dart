@@ -3,8 +3,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:synvero/core/config/streak_rules.dart';
 import 'package:synvero/core/services/gamification_service.dart';
-import 'package:synvero/core/services/streak_freeze_service.dart';
 import 'package:synvero/core/services/supabase_service.dart';
 
 /// Leaderboard member model representing a real registered HabitNova user.
@@ -246,7 +246,7 @@ class LeaderboardService {
   /// The freeze bank as it should travel to the cloud: never negative, never
   /// above the cap the app allows locally.
   static int freezeCountForCloud(int? stored) =>
-      (stored ?? 0).clamp(0, StreakFreezeService.maxFreezes);
+      (stored ?? 0).clamp(0, StreakRules.maxFreezes);
 
   /// Pushes user's stats to Firestore community_leaderboard
   ///

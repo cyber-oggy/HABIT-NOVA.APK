@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:synvero/core/config/streak_rules.dart';
 import 'package:synvero/core/services/gamification_service.dart';
 
 /// Result of trying to buy a streak freeze with XP.
@@ -22,16 +23,16 @@ class StreakFreezeService {
   StreakFreezeService._();
 
   /// Free freezes granted at the start of each week.
-  static const int weeklyFreeFreezes = 1;
+  static const int weeklyFreeFreezes = StreakRules.weeklyFreeFreezes;
 
   /// How many freezes can be banked at once.
-  static const int maxFreezes = 3;
+  static const int maxFreezes = StreakRules.maxFreezes;
 
   /// XP price of one purchased freeze.
-  static const int freezeCostXP = 100;
+  static const int freezeCostXP = StreakRules.freezeCostXP;
 
   /// Frozen dates kept for history (older entries are trimmed).
-  static const int _maxFrozenHistory = 60;
+  static const int _maxFrozenHistory = StreakRules.maxFrozenHistory;
 
   static String _countKey(String userId) => 'user_${userId}_streak_freezes_v1';
   static String _weekKey(String userId) =>

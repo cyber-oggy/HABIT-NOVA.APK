@@ -2,8 +2,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:synvero/core/config/streak_rules.dart';
 import 'package:synvero/core/services/leaderboard_service.dart';
-import 'package:synvero/core/services/streak_freeze_service.dart';
 import 'package:synvero/core/services/supabase_service.dart';
 
 /// Represents a gamification achievement badge in HabbitNova.
@@ -258,7 +258,7 @@ class GamificationService {
     // The frozen-day history is local and is intentionally left alone.
     final localFreezes =
         prefs.getInt('user_${userId}_streak_freezes_v1') ?? 0;
-    final restoredFreezes = cloudFreezes.clamp(0, StreakFreezeService.maxFreezes);
+    final restoredFreezes = cloudFreezes.clamp(0, StreakRules.maxFreezes);
     if (restoredFreezes > localFreezes) {
       await prefs.setInt(
         'user_${userId}_streak_freezes_v1',

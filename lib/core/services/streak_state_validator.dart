@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:synvero/core/config/streak_rules.dart';
 import 'package:synvero/core/services/gamification_service.dart';
 import 'package:synvero/core/services/streak_freeze_service.dart';
 
@@ -71,8 +72,8 @@ class StreakStateReport {
 class StreakStateValidator {
   StreakStateValidator._();
 
-  /// Must match [StreakFreezeService]'s frozen history retention.
-  static const int maxFrozenHistory = 60;
+  /// Frozen history retention, shared with [StreakFreezeService].
+  static const int maxFrozenHistory = StreakRules.maxFrozenHistory;
 
   static String _streakKey(String uid) => 'user_${uid}_streak_days';
   static String _dayKey(String uid) => 'user_${uid}_streak_last_date_v1';
@@ -169,7 +170,7 @@ class StreakStateValidator {
     // --- freeze bank --------------------------------------------------------
     final int? freezeCount = prefs.getInt(_freezeKey(uid));
     if (freezeCount != null) {
-      final int clamped = freezeCount.clamp(0, StreakFreezeService.maxFreezes);
+      final int clamped = freezeCount.clamp(0, StreakRules.maxFreezes);
       if (clamped != freezeCount) {
         await prefs.setInt(_freezeKey(uid), clamped);
         repairs.add(StreakStateRepair.clampedFreezeCount);
