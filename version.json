@@ -1,12 +1,14 @@
 {
-  "latest_version": "1.1.0",
-  "latest_build": 2,
+  "latest_version": "1.2.0",
+  "latest_build": 3,
   "min_supported_build": 1,
   "apk_url": "https://github.com/codewithyogeshh/HABIT-NOVA.APK/raw/main/apk/habit-nova-release.apk",
   "notes": [
-    "Premium typography and a refreshed, polished theme",
-    "In-app update prompt — no more uninstall and reinstall",
-    "Smoother buttons, cards and dialogs across every screen"
+    "Streak freeze — skip one bad day without losing your streak, buy more with XP",
+    "Smart reminders warn you before a streak is at risk",
+    "Update HabitNova from inside the app — no uninstall, habits and login stay",
+    "Premium typography and smoother cards, dialogs and buttons",
+    "Fixed overlapping labels and cramped layouts on small screens"
   ],
-  "released_at": "2026-11-25"
+  "released_at": "2026-11-26"
 }
