@@ -130,6 +130,41 @@ class StreakFreezeService {
     }
   }
 
+  /// Copies the pre-freeze `last_habit_date` into the dedicated streak key.
+  ///
+  /// Builds before streak freeze only wrote `user_<uid>_last_habit_date`, and
+  /// the midnight rollover rewrites that key with *today* on every launch.
+  /// Without this one-time copy a migrated user looks like they already
+  /// completed today, so their streak would never grow again.
+  static Future<String?> _migrateLegacyLastDate(
+    SharedPreferences prefs,
+    String uid,
+  ) async {
+    final String? existing = prefs.getString(_streakLastDateKey(uid));
+    if (existing != null) return existing;
+
+    final String? legacy = prefs.getString('user_${uid}_last_habit_date');
+    if (_parseDate(legacy) == null) return legacy;
+
+    await prefs.setString(_streakLastDateKey(uid), legacy!);
+    return legacy;
+  }
+
+  /// One-time migration for accounts that predate streak freeze.
+  ///
+  /// Safe to call on every launch: it only writes when the new key is missing.
+  /// Must run before the midnight rollover overwrites `last_habit_date`, so the
+  /// real last completed day is captured rather than today.
+  static Future<void> migrateLegacyStreakState({String? userId}) async {
+    final uid = userId ?? GamificationService.currentUserId;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await _migrateLegacyLastDate(prefs, uid);
+    } catch (e) {
+      debugPrint('StreakFreezeService.migrateLegacyStreakState error: $e');
+    }
+  }
+
   /// Number of whole days missed since the last completed day.
   ///
   /// Returns 0 when the streak is 0, the last date is unknown, or nothing was
@@ -142,9 +177,7 @@ class StreakFreezeService {
       final streak = prefs.getInt(_streakKey(uid)) ?? 0;
       if (streak <= 0) return 0;
 
-      final lastStr =
-          prefs.getString(_streakLastDateKey(uid)) ??
-          prefs.getString('user_${uid}_last_habit_date');
+      final lastStr = await _migrateLegacyLastDate(prefs, uid);
       final last = _parseDate(lastStr);
       if (last == null) return 0;
 
@@ -176,16 +209,9 @@ class StreakFreezeService {
       final streak = prefs.getInt(_streakKey(uid)) ?? 0;
       if (streak <= 0) return 0;
 
-      var lastStr = prefs.getString(_streakLastDateKey(uid));
-      if (lastStr == null) {
-        // Users who built a streak before this feature existed have no
-        // dedicated key; fall back to their last habit activity date.
-        lastStr = prefs.getString('user_${uid}_last_habit_date');
-        if (lastStr != null) {
-          await prefs.setString(_streakLastDateKey(uid), lastStr);
-        }
-      }
-
+      // Users who built a streak before this feature existed only have the
+      // legacy last habit date; it is copied over once and reused afterwards.
+      final lastStr = await _migrateLegacyLastDate(prefs, uid);
       final last = _parseDate(lastStr);
       if (last == null) return 0;
 
@@ -244,9 +270,7 @@ class StreakFreezeService {
       );
 
       final streak = prefs.getInt(_streakKey(uid)) ?? 0;
-      final lastStr =
-          prefs.getString(_streakLastDateKey(uid)) ??
-          prefs.getString('user_${uid}_last_habit_date');
+      final lastStr = await _migrateLegacyLastDate(prefs, uid);
 
       if (lastStr == todayStr) {
         // Already counted today. Repair a missing/inconsistent value only.

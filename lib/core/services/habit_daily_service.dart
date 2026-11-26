@@ -142,6 +142,10 @@ class HabitDailyService {
       final todayStr = getTodayDateStr();
       final lastDate = prefs.getString(_lastActiveDateKey(userId));
 
+      // Capture the last real completion day for accounts upgraded from a
+      // build without streak freeze, before this method rewrites it below.
+      await StreakFreezeService.migrateLegacyStreakState(userId: userId);
+
       if (lastDate == null) {
         // First initialization
         await prefs.setString(_lastActiveDateKey(userId), todayStr);
