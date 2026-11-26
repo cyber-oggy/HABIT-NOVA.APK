@@ -40,6 +40,7 @@ class StreakFreezeService {
       'user_${userId}_streak_frozen_dates_v1';
   static String _streakLastDateKey(String userId) =>
       'user_${userId}_streak_last_date_v1';
+  static String _lastAtKey(String userId) => 'user_${userId}_streak_last_at_v1';
   static String _streakKey(String userId) => 'user_${userId}_streak_days';
 
   /// `yyyy-MM-dd` for the local calendar day of [date].
@@ -63,6 +64,38 @@ class StreakFreezeService {
     final parsed = DateTime.tryParse(raw);
     if (parsed == null) return null;
     return DateTime(parsed.year, parsed.month, parsed.day);
+  }
+
+  static DateTime? _parseInstant(String? raw) {
+    if (raw == null) return null;
+    return DateTime.tryParse(raw)?.toUtc();
+  }
+
+  /// Whole 24-hour periods that really elapsed between [lastAt] and [now].
+  ///
+  /// A local calendar can gain or lose days without any real time passing when
+  /// the device timezone changes, the clock is set manually, or DST shifts it.
+  /// You cannot miss a day you never lived through, so a gap is capped by this
+  /// number: a jumped clock must not spend freezes or break a streak.
+  static int elapsedWholeDays(DateTime lastAt, DateTime now) {
+    final difference = now.toUtc().difference(lastAt.toUtc());
+    if (difference.isNegative) return 0;
+    return difference.inHours ~/ 24;
+  }
+
+  /// Caps a date-based gap by the real time that elapsed, when known.
+  static int _capGapToElapsed(
+    SharedPreferences prefs,
+    String uid,
+    int missedDays,
+    DateTime reference,
+  ) {
+    if (missedDays <= 0) return 0;
+    final lastAt = _parseInstant(prefs.getString(_lastAtKey(uid)));
+    // Accounts upgraded from an older build have no instant to compare with.
+    if (lastAt == null) return missedDays;
+    final lived = elapsedWholeDays(lastAt, reference);
+    return missedDays > lived ? lived : missedDays;
   }
 
   /// Grants this week's free freeze once. Safe to call on every app open.
@@ -186,7 +219,14 @@ class StreakFreezeService {
       final yesterday = DateTime(today.year, today.month, today.day - 1);
       if (!last.isBefore(yesterday)) return 0;
 
-      return yesterday.difference(last).inDays;
+      // A device clock that jumped forward can create calendar gaps that never
+      // happened; only gaps the user actually lived through count.
+      return _capGapToElapsed(
+        prefs,
+        uid,
+        yesterday.difference(last).inDays,
+        reference,
+      );
     } catch (e) {
       debugPrint('StreakFreezeService.missedDays error: $e');
       return 0;
@@ -215,15 +255,21 @@ class StreakFreezeService {
       final last = _parseDate(lastStr);
       if (last == null) return 0;
 
+      final reference = now ?? DateTime.now();
       final today = DateTime(
-        (now ?? DateTime.now()).year,
-        (now ?? DateTime.now()).month,
-        (now ?? DateTime.now()).day,
+        reference.year,
+        reference.month,
+        reference.day,
       );
       final yesterday = DateTime(today.year, today.month, today.day - 1);
       if (!last.isBefore(yesterday)) return 0;
 
-      final missed = yesterday.difference(last).inDays;
+      final missed = _capGapToElapsed(
+        prefs,
+        uid,
+        yesterday.difference(last).inDays,
+        reference,
+      );
       if (missed <= 0) return 0;
 
       final available = prefs.getInt(_countKey(uid)) ?? 0;
@@ -240,6 +286,8 @@ class StreakFreezeService {
       await prefs.setStringList(_frozenDatesKey(uid), frozen);
       await prefs.setInt(_countKey(uid), available - missed);
       await prefs.setString(_streakLastDateKey(uid), formatDate(yesterday));
+      // The covered days count as the new baseline for clock-change checks.
+      await _writeLastAt(prefs, uid, reference);
       return missed;
     } catch (e) {
       debugPrint('StreakFreezeService.applyMissedDayFreeze error: $e');
@@ -256,42 +304,68 @@ class StreakFreezeService {
     String? userId,
     DateTime? now,
   }) async {
-    final uid = userId ?? GamificationService.currentUserId;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final today = DateTime(
-        (now ?? DateTime.now()).year,
-        (now ?? DateTime.now()).month,
-        (now ?? DateTime.now()).day,
-      );
-      final todayStr = formatDate(today);
-      final yesterdayStr = formatDate(
-        DateTime(today.year, today.month, today.day - 1),
-      );
+          final uid = userId ?? GamificationService.currentUserId;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final moment = now ?? DateTime.now();
+        final today = DateTime(moment.year, moment.month, moment.day);
+        final todayStr = formatDate(today);
+        final yesterdayStr = formatDate(
+          DateTime(today.year, today.month, today.day - 1),
+        );
 
-      final streak = prefs.getInt(_streakKey(uid)) ?? 0;
-      final lastStr = await _migrateLegacyLastDate(prefs, uid);
+        final streak = prefs.getInt(_streakKey(uid)) ?? 0;
+        var lastStr = await _migrateLegacyLastDate(prefs, uid);
 
-      if (lastStr == todayStr) {
-        // Already counted today. Repair a missing/inconsistent value only.
-        if (streak > 0) return streak;
-        await _writeStreak(prefs, uid, 1);
-        return 1;
-      }
+        if (lastStr == todayStr) {
+          // Already counted today. Repair a missing/inconsistent value only.
+          if (streak > 0) return streak;
+          await prefs.setString(_streakLastDateKey(uid), todayStr);
+          await _writeLastAt(prefs, uid, moment);
+          await _writeStreak(prefs, uid, 1);
+          return 1;
+        }
 
-      int nextStreak;
-      if (lastStr == yesterdayStr) {
-        nextStreak = streak > 0 ? streak + 1 : 1;
-      } else if (lastStr == null) {
-        // Legacy user: keep the stored streak instead of resetting it.
-        nextStreak = streak > 0 ? streak : 1;
-      } else {
-        nextStreak = 1;
-      }
+        // The stored day is ahead of today: the device date moved backwards
+        // (timezone travel, DST or a manual change). Today was already lived
+        // and counted, so keep the streak instead of restarting it at 1.
+        if (lastStr != null && lastStr.compareTo(todayStr) > 0) {
+          if (streak > 0) return streak;
+          await prefs.setString(_streakLastDateKey(uid), todayStr);
+          await _writeLastAt(prefs, uid, moment);
+          await _writeStreak(prefs, uid, 1);
+          return 1;
+        }
 
-      await prefs.setString(_streakLastDateKey(uid), todayStr);
-      await _writeStreak(prefs, uid, nextStreak);
-      return nextStreak;
+        // A calendar gap wider than the real time that elapsed can only come
+        // from the device clock or timezone jumping forward. The user did
+        // nothing wrong, so today counts as the next lived day instead of a
+        // broken streak.
+        if (lastStr != yesterdayStr) {
+          final last = _parseDate(lastStr);
+          final lastAt = _parseInstant(prefs.getString(_lastAtKey(uid)));
+          if (last != null && lastAt != null) {
+            final gap = today.difference(last).inDays;
+            if (gap > elapsedWholeDays(lastAt, moment) + 1) {
+              lastStr = yesterdayStr;
+            }
+          }
+        }
+
+        int nextStreak;
+        if (lastStr == yesterdayStr) {
+          nextStreak = streak > 0 ? streak + 1 : 1;
+        } else if (lastStr == null) {
+          // Legacy user: keep the stored streak instead of resetting it.
+          nextStreak = streak > 0 ? streak : 1;
+        } else {
+          nextStreak = 1;
+        }
+
+        await prefs.setString(_streakLastDateKey(uid), todayStr);
+        await _writeLastAt(prefs, uid, moment);
+        await _writeStreak(prefs, uid, nextStreak);
+        return nextStreak;
     } catch (e) {
       debugPrint('StreakFreezeService.recordCompletionDay error: $e');
       return 0;
@@ -306,6 +380,15 @@ class StreakFreezeService {
     await prefs.setInt(_streakKey(uid), streak);
     // Kept in sync for the leaderboard / widget readers.
     await prefs.setInt('app_streak_days', streak);
+  }
+
+  /// Records the real UTC instant behind the stored completion day.
+  static Future<void> _writeLastAt(
+    SharedPreferences prefs,
+    String uid,
+    DateTime moment,
+  ) async {
+    await prefs.setString(_lastAtKey(uid), moment.toUtc().toIso8601String());
   }
 
   static Future<int> currentStreak({String? userId}) async {

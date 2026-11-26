@@ -11,12 +11,27 @@ import 'package:synvero/core/services/streak_risk_service.dart';
 /// preserving streaks and historical logs without requiring manual user intervention.
 class HabitDailyService {
   static String getTodayDateStr() {
-    return DateTime.now().toIso8601String().split('T').first;
+    return _dateStr(DateTime.now());
   }
 
   static String getYesterdayDateStr() {
-    return DateTime.now().subtract(const Duration(days: 1)).toIso8601String().split('T').first;
+    return _dateStr(DateTime.now().subtract(const Duration(days: 1)));
   }
+
+  /// `yyyy-MM-dd` for the device-local calendar day of [moment].
+  ///
+  /// Computed from the local date fields rather than a UTC string, so the day
+  /// boundary always follows the calendar the user actually lives in and
+  /// `yyyy-MM-dd` strings stay comparable as plain text.
+  static String _dateStr(DateTime moment) {
+    final month = moment.month.toString().padLeft(2, '0');
+    final day = moment.day.toString().padLeft(2, '0');
+    return '${moment.year}-$month-$day';
+  }
+
+  /// True when [dateStr] (a `yyyy-MM-dd` day) is after [than].
+  static bool _isAfterDay(String dateStr, String than) =>
+      dateStr.compareTo(than) > 0;
 
   static String _habitKey(String userId, String habitId, String dateStr) {
     return 'user_${userId}_habit_${habitId}_completed_$dateStr';
@@ -136,10 +151,17 @@ class HabitDailyService {
 
   /// Checks if midnight has passed since last check.
   /// If a new day has arrived, handles streak maintenance and signals a reset.
-  static Future<bool> verifyAndPerformMidnightReset(String userId) async {
+  static Future<bool> verifyAndPerformMidnightReset(
+    String userId, {
+    DateTime? now,
+  }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final todayStr = getTodayDateStr();
+      final moment = now ?? DateTime.now();
+      final todayStr = _dateStr(moment);
+      final yesterdayStr = _dateStr(
+        moment.subtract(const Duration(days: 1)),
+      );
       final lastDate = prefs.getString(_lastActiveDateKey(userId));
 
       // Capture the last real completion day for accounts upgraded from a
@@ -152,10 +174,20 @@ class HabitDailyService {
         return false;
       }
 
+      // The stored day is ahead of today: the device date moved backwards
+      // (timezone travel, DST fall-back or a manual change). Nothing was
+      // missed, so leave the streak, freezes and history untouched instead of
+      // charging the user for a day they already lived.
+      if (_isAfterDay(lastDate, todayStr)) {
+        debugPrint(
+          'Clock moved backwards: active day $lastDate is ahead of $todayStr; '
+          'skipping the rollover',
+        );
+        return false;
+      }
+
       if (lastDate != todayStr) {
         debugPrint('Midnight rollover detected: Last active was $lastDate, today is $todayStr');
-
-        final yesterdayStr = getYesterdayDateStr();
 
         // Bank this week's free freeze before the missed days are evaluated.
         await StreakFreezeService.grantWeeklyFreezeIfDue(userId: userId);
@@ -163,10 +195,15 @@ class HabitDailyService {
         // A missed day is first covered by a banked freeze. The streak only
         // breaks when the whole gap cannot be covered, so one freeze is never
         // silently wasted on a longer absence.
-        final missedDays =
-            await StreakFreezeService.missedDays(userId: userId);
+        final missedDays = await StreakFreezeService.missedDays(
+          userId: userId,
+          now: moment,
+        );
         final coveredDays = missedDays > 0
-            ? await StreakFreezeService.applyMissedDayFreeze(userId: userId)
+            ? await StreakFreezeService.applyMissedDayFreeze(
+                userId: userId,
+                now: moment,
+              )
             : 0;
 
         if (missedDays > 0 && coveredDays == 0) {

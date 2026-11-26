@@ -125,7 +125,12 @@ class StreakRiskReminderService {
     if (streakDays <= 0) return null;
 
     final today = formatDate(now);
-    if (alreadyRemindedOn == today) return null;
+    // `>=` also covers a stored day ahead of today, i.e. the device date moved
+    // backwards: that local day was already nudged, so never send a second one.
+    if (alreadyRemindedOn != null &&
+        alreadyRemindedOn.compareTo(today) >= 0) {
+      return null;
+    }
 
     final hour = typicalCompletionHour(samples);
     var fireAt = DateTime(now.year, now.month, now.day, hour);
