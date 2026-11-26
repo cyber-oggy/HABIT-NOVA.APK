@@ -210,7 +210,14 @@ installs it *over* the existing app, so habits, streaks and login are preserved.
 - Android only (`package_info_plus` reads the real installed version).
 - Any failure (offline, 404, bad JSON) is ignored silently — the app still opens.
 - Set `min_supported_build` in `version.json` to force an update; the popup then
-  has no "Later" button.
+  has no "Later" button, ignores "Later" snoozes and is re-shown from the last
+  known manifest even when the device is offline.
+- `sha256` pins the exact APK users download. The app hashes the download while
+  it streams and only opens the installer when it matches; without a usable
+  hash the card offers the browser download instead.
+- `version_code` is the Android `versionCode` of that APK. The app refuses to
+  start an install whose file is not newer than itself, and the native side
+  re-reads the downloaded APK's `versionCode` before showing the installer.
 
 ### Steps for every release
 
@@ -221,8 +228,18 @@ installs it *over* the existing app, so habits, streaks and login are preserved.
    as `apk_url` (a GitHub Release asset is recommended over a repo file, because
    release assets keep their name and never bloat the git history).
 4. Update `version.json`: `latest_version`, `latest_build` (must equal the new
-   build number), `notes`, `released_at`. Commit and push `version.json`.
-5. Users on older builds now see the popup next time they open the app.
+   build number), `version_code` (the APK's `versionCode`, i.e. the `+N` of
+   `pubspec.yaml`), `sha256`, `notes`, `released_at`. Commit and push
+   `version.json`.
+5. Compute the hash from the file you just uploaded:
+
+   ```bash
+   sha256sum habit-nova-release.apk     # macOS: shasum -a 256
+   ```
+
+   `test/release_manifest_test.dart` fails when `sha256` does not match the
+   committed APK, so a forgotten update cannot ship.
+6. Users on older builds now see the popup next time they open the app.
 
 > Publish the APK *before* committing `version.json`, otherwise users are told
 > about an update that isn't downloadable yet.

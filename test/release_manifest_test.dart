@@ -1,8 +1,30 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:synvero/core/services/app_update_service.dart';
+
+/// Collects the single digest a chunked hash conversion produces.
+class _DigestSink implements Sink<Digest> {
+  Digest? value;
+
+  @override
+  void add(Digest data) => value = data;
+
+  @override
+  void close() {}
+}
+
+Future<String> _sha256OfFile(File file) async {
+  final _DigestSink sink = _DigestSink();
+  final hasher = sha256.startChunkedConversion(sink);
+  await for (final List<int> chunk in file.openRead()) {
+    hasher.add(chunk);
+  }
+  hasher.close();
+  return sink.value!.toString();
+}
 
 /// Guards the release contract between the app and the update manifest.
 ///
@@ -83,6 +105,60 @@ void main() {
           reason: 'blank notes leave an empty row in the prompt',
         );
       }
+    });
+  });
+
+  group('version.json pins the published APK', () {
+    const String apkPath = 'apk/habit-nova-release.apk';
+
+    test('apk_url serves the APK committed in this repository', () {
+      final Uri url = Uri.parse((manifest['apk_url'] as String).trim());
+
+      expect(
+        url.path.endsWith(apkPath),
+        isTrue,
+        reason: 'apk_url must point at $apkPath, got ${url.path}',
+      );
+    });
+
+    test('sha256 is a lower-case 64 character digest', () {
+      final Object? raw = manifest['sha256'];
+
+      expect(raw, isA<String>());
+      expect(
+        raw as String,
+        matches(RegExp(r'^[a-f0-9]{64}$')),
+        reason: 'the app only accepts a plain lower-case hex sha256',
+      );
+    });
+
+    test('sha256 is the hash of the APK users download', () async {
+      final File apk = File('${root.path}/$apkPath');
+
+      expect(apk.existsSync(), isTrue, reason: 'missing $apkPath');
+      expect(
+        await _sha256OfFile(apk),
+        manifest['sha256'],
+        reason:
+            'version.json pins a different APK than the one served; every '
+            'in-app install would fail its integrity check. Regenerate the '
+            'manifest after replacing the APK.',
+      );
+    });
+
+    test('version_code describes an installable package', () {
+      final Object? raw = manifest['version_code'];
+
+      expect(raw, isA<num>());
+      final int versionCode = (raw as num).toInt();
+      expect(versionCode, greaterThan(0));
+      expect(
+        versionCode,
+        lessThanOrEqualTo(buildNumber),
+        reason:
+            'version.json says build $buildNumber; the served package is '
+            'versionCode $versionCode',
+      );
     });
   });
 

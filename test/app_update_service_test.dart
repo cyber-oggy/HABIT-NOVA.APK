@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:synvero/core/config/app_update_config.dart';
 import 'package:synvero/core/services/app_update_service.dart';
 
 /// A tiny fake HTTP stack so `AppUpdateService.checkForUpdate` can be tested
@@ -130,19 +131,26 @@ class _FakeHttpOverrides extends HttpOverrides {
   HttpClient createHttpClient(SecurityContext? context) => client;
 }
 
+const String _validSha =
+    'c2ddbe6b1f84cab09dd87945631e7fe275f6f4cc35a784d86097243330791e80';
+
 /// A valid manifest, matching the shape of `version.json` in the repo root.
 Map<String, dynamic> _manifest({
   Object? latestVersion = '1.1.0',
   Object? latestBuild = 2,
+  Object? versionCode,
   Object? minSupportedBuild = 1,
   Object? apkUrl = 'https://example.com/app.apk',
+  Object? sha256 = _validSha,
   Object? notes,
 }) {
   return <String, dynamic>{
     'latest_version': ?latestVersion,
     'latest_build': ?latestBuild,
+    'version_code': ?versionCode,
     'min_supported_build': ?minSupportedBuild,
     'apk_url': ?apkUrl,
+    'sha256': ?sha256,
     'notes': ?notes,
     'released_at': '2026-11-25',
   };
@@ -271,6 +279,59 @@ void main() {
       );
 
       expect(info!.notes, isEmpty);
+    });
+
+    test('reads the package hash', () {
+      final AppUpdateInfo? info = AppUpdateInfo.fromManifest(
+        _manifest(sha256: '  ${_validSha.toUpperCase()}  '),
+        currentBuild: 1,
+        currentVersion: '1.0.0',
+      );
+
+      expect(info, isNotNull);
+      expect(info!.sha256, _validSha);
+      expect(info.canInstallInApp, isTrue);
+    });
+
+    test('a malformed hash disables the in-app install, not the prompt', () {
+      for (final Object? bad in <Object?>['abc', '', 42, <String>[]]) {
+        final AppUpdateInfo? info = AppUpdateInfo.fromManifest(
+          _manifest(sha256: bad),
+          currentBuild: 1,
+          currentVersion: '1.0.0',
+        );
+
+        expect(info, isNotNull, reason: 'hash: $bad');
+        expect(info!.sha256, isNull, reason: 'hash: $bad');
+        expect(info.canInstallInApp, isFalse, reason: 'hash: $bad');
+      }
+    });
+
+    test('defaults version_code to the advertised build', () {
+      final AppUpdateInfo? info = AppUpdateInfo.fromManifest(
+        _manifest(latestBuild: 4),
+        currentBuild: 1,
+        currentVersion: '1.0.0',
+      );
+
+      expect(info!.versionCode, 4);
+      expect(info.isPackageNewer, isTrue);
+    });
+
+    test('reads an explicit version_code', () {
+      final AppUpdateInfo? info = AppUpdateInfo.fromManifest(
+        _manifest(latestBuild: 4, versionCode: 2),
+        currentBuild: 3,
+        currentVersion: '1.0.0',
+      );
+
+      expect(info!.versionCode, 2);
+      expect(
+        info.isPackageNewer,
+        isFalse,
+        reason: 'the published package is older than the installed build',
+      );
+      expect(info.canInstallInApp, isFalse);
     });
   });
 
@@ -471,6 +532,90 @@ void main() {
       await AppUpdateService.snooze();
 
       expect(AppUpdateService.availableUpdate.value, isNull);
+    });
+
+    test('a snooze cannot hide a required update', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        AppUpdateConfig.snoozeKey: DateTime.now()
+            .add(const Duration(hours: 12))
+            .millisecondsSinceEpoch,
+      });
+      installVersion('1.0.0', '1');
+      serve(
+        _manifest(
+          latestVersion: '1.1.0',
+          latestBuild: 2,
+          minSupportedBuild: 2,
+        ),
+      );
+
+      await AppUpdateService.checkForUpdate();
+
+      final AppUpdateInfo? info = AppUpdateService.availableUpdate.value;
+      expect(info, isNotNull);
+      expect(info!.isMandatory, isTrue);
+    });
+
+    test('a snooze still hides an optional update', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        AppUpdateConfig.snoozeKey: DateTime.now()
+            .add(const Duration(hours: 12))
+            .millisecondsSinceEpoch,
+      });
+      installVersion('1.0.0', '1');
+      serve(_manifest(latestVersion: '1.1.0', latestBuild: 2));
+
+      await AppUpdateService.checkForUpdate();
+
+      expect(AppUpdateService.availableUpdate.value, isNull);
+    });
+
+    test('a required update survives an unreachable manifest', () async {
+      installVersion('1.0.0', '1');
+      serve(_manifest(latestVersion: '1.1.0', latestBuild: 2, minSupportedBuild: 2));
+      await AppUpdateService.checkForUpdate(force: true);
+      expect(AppUpdateService.availableUpdate.value, isNotNull);
+
+      AppUpdateService.availableUpdate.value = null;
+      client = _FakeHttpClient(failure: const SocketException('offline'));
+      HttpOverrides.global = _FakeHttpOverrides(client);
+      await AppUpdateService.checkForUpdate(force: true);
+
+      expect(AppUpdateService.availableUpdate.value?.minSupportedBuild, 2);
+    });
+
+    test('an optional update is not revived from cache while offline', () async {
+      installVersion('1.0.0', '1');
+      serve(_manifest(latestVersion: '1.1.0', latestBuild: 2));
+      await AppUpdateService.checkForUpdate(force: true);
+      expect(AppUpdateService.availableUpdate.value, isNotNull);
+
+      AppUpdateService.availableUpdate.value = null;
+      client = _FakeHttpClient(failure: const SocketException('offline'));
+      HttpOverrides.global = _FakeHttpOverrides(client);
+      await AppUpdateService.checkForUpdate(force: true);
+
+      expect(AppUpdateService.availableUpdate.value, isNull);
+    });
+
+    test('a required update shows even when no newer build is published',
+        () async {
+      installVersion('1.2.0', '3');
+      serve(_manifest(latestVersion: '1.2.0', latestBuild: 3, minSupportedBuild: 4));
+
+      await AppUpdateService.checkForUpdate(force: true);
+
+      expect(AppUpdateService.availableUpdate.value?.isMandatory, isTrue);
+    });
+
+    test('snooze refuses to postpone a required update', () async {
+      installVersion('1.0.0', '1');
+      serve(_manifest(latestVersion: '1.1.0', latestBuild: 2, minSupportedBuild: 2));
+      await AppUpdateService.checkForUpdate(force: true);
+
+      await AppUpdateService.snooze();
+
+      expect(AppUpdateService.availableUpdate.value?.isMandatory, isTrue);
     });
 
     test('is skipped when the platform is not Android', () async {

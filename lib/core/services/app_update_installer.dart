@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
@@ -57,11 +58,40 @@ class UpdateInstallState {
   }
 }
 
+/// The downloaded file is not the release the manifest describes.
+///
+/// Thrown instead of launching the installer, so a truncated download, an
+/// HTML error page or a swapped file on the host can never reach Android's
+/// package installer.
+class UpdateIntegrityException implements Exception {
+  const UpdateIntegrityException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'UpdateIntegrityException: $message';
+}
+
+/// Collects the single [Digest] that a chunked hash conversion produces.
+class _DigestCollector implements Sink<Digest> {
+  Digest? value;
+
+  @override
+  void add(Digest data) => value = data;
+
+  @override
+  void close() {}
+}
+
 /// Downloads the published APK inside the app and hands it to the Android
 /// package installer, so the user never uninstalls or leaves HabitNova.
 ///
 /// Nothing is installed silently: the system installer still shows its own
 /// confirmation sheet, which is the only way Android allows a self-update.
+///
+/// Before that sheet is opened the file must match `sha256` from the manifest
+/// and carry the `versionCode` the manifest advertises, so an interrupted
+/// download or a stale release fails here with a readable message.
 class AppUpdateInstaller {
   AppUpdateInstaller._();
 
@@ -120,14 +150,35 @@ class AppUpdateInstaller {
     });
   }
 
-  /// Runs the whole flow: permission check, download, then launch the installer.
-  static Future<void> start(AppUpdateInfo info) async {
+  /// Runs the whole flow: permission check, download, verify, then launch the
+  /// installer.
+  ///
+  /// [client] exists for tests; production always uses a fresh HTTP client.
+  static Future<void> start(AppUpdateInfo info, {http.Client? client}) async {
     if (state.value.isBusy) return;
     _watchLifecycle();
     if (!AppUpdateService.isSupportedPlatform) {
       state.value = const UpdateInstallState(
         stage: UpdateInstallStage.failed,
         message: 'In-app updates are only available on Android.',
+      );
+      return;
+    }
+
+    if (info.sha256 == null) {
+      state.value = const UpdateInstallState(
+        stage: UpdateInstallStage.failed,
+        message:
+            'This update cannot be verified inside the app. Download it in your browser instead.',
+      );
+      return;
+    }
+
+    if (!info.isPackageNewer) {
+      state.value = UpdateInstallState(
+        stage: UpdateInstallStage.failed,
+        message:
+            'The published package (build ${info.versionCode}) is not newer than this app. Please try again later.',
       );
       return;
     }
@@ -166,7 +217,18 @@ class AppUpdateInstaller {
       }
 
       final File apk = File('${dir.path}/habitnova-${info.latestBuild}.apk');
-      await _download(info, apk);
+      final http.Client httpClient = client ?? http.Client();
+      try {
+        await _download(info, apk, httpClient);
+      } catch (_) {
+        // Never leave a partial or unverified package behind.
+        try {
+          if (apk.existsSync()) apk.deleteSync();
+        } catch (_) {}
+        rethrow;
+      } finally {
+        if (client == null) httpClient.close();
+      }
 
       state.value = state.value.copyWith(
         stage: UpdateInstallStage.launching,
@@ -176,6 +238,7 @@ class AppUpdateInstaller {
 
       final bool? opened = await _channel.invokeMethod<bool>('installApk', {
         'path': apk.path,
+        'expectedVersionCode': info.versionCode,
       });
       if (opened != true) {
         throw const FileSystemException('Installer did not open');
@@ -191,6 +254,12 @@ class AppUpdateInstaller {
         stage: UpdateInstallStage.failed,
         message: e.message ?? 'Could not open the installer.',
       );
+    } on UpdateIntegrityException {
+      state.value = const UpdateInstallState(
+        stage: UpdateInstallStage.failed,
+        message:
+            'The download did not match the published release. Please try again.',
+      );
     } on TimeoutException {
       state.value = const UpdateInstallState(
         stage: UpdateInstallStage.failed,
@@ -205,47 +274,60 @@ class AppUpdateInstaller {
     }
   }
 
-  static Future<void> _download(AppUpdateInfo info, File target) async {
-    final http.Client client = http.Client();
+  static Future<void> _download(
+    AppUpdateInfo info,
+    File target,
+    http.Client client,
+  ) async {
+    state.value = const UpdateInstallState(
+      stage: UpdateInstallStage.downloading,
+      message: 'Downloading update…',
+    );
+
+    final http.Request request = http.Request('GET', Uri.parse(info.apkUrl));
+    final http.StreamedResponse response = await client
+        .send(request)
+        .timeout(AppUpdateConfig.downloadTimeout);
+
+    if (response.statusCode != 200) {
+      throw HttpException('HTTP ${response.statusCode}');
+    }
+
+    // Hash while writing: an 80 MB APK never has to be read back into memory
+    // or from disk just to be checked.
+    final _DigestCollector digest = _DigestCollector();
+    final hasher = sha256.startChunkedConversion(digest);
+
+    final int total = response.contentLength ?? 0;
+    final IOSink sink = target.openWrite();
+    int received = 0;
     try {
-      state.value = const UpdateInstallState(
-        stage: UpdateInstallStage.downloading,
-        message: 'Downloading update…',
-      );
-
-      final http.Request request = http.Request('GET', Uri.parse(info.apkUrl));
-      final http.StreamedResponse response = await client
-          .send(request)
-          .timeout(AppUpdateConfig.downloadTimeout);
-
-      if (response.statusCode != 200) {
-        throw HttpException('HTTP ${response.statusCode}');
+      await for (final List<int> chunk in response.stream) {
+        sink.add(chunk);
+        hasher.add(chunk);
+        received += chunk.length;
+        state.value = state.value.copyWith(
+          progress: total > 0 ? (received / total).clamp(0.0, 1.0) : 0,
+          message: total > 0
+              ? 'Downloading update… ${((received / total) * 100).round()}%'
+              : 'Downloading update…',
+        );
       }
-
-      final int total = response.contentLength ?? 0;
-      final IOSink sink = target.openWrite();
-      int received = 0;
-      try {
-        await for (final List<int> chunk in response.stream) {
-          sink.add(chunk);
-          received += chunk.length;
-          state.value = state.value.copyWith(
-            progress: total > 0 ? (received / total).clamp(0.0, 1.0) : 0,
-            message: total > 0
-                ? 'Downloading update… ${((received / total) * 100).round()}%'
-                : 'Downloading update…',
-          );
-        }
-        await sink.flush();
-      } finally {
-        await sink.close();
-      }
-
-      if (received == 0) {
-        throw const HttpException('Empty download');
-      }
+      await sink.flush();
     } finally {
-      client.close();
+      await sink.close();
+    }
+    hasher.close();
+
+    if (received == 0) {
+      throw const HttpException('Empty download');
+    }
+
+    final String actual = digest.value?.toString() ?? '';
+    if (actual != info.sha256) {
+      throw UpdateIntegrityException(
+        'sha256 mismatch: expected ${info.sha256}, downloaded $actual',
+      );
     }
   }
 }

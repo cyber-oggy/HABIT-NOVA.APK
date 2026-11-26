@@ -1,8 +1,10 @@
 {
   "latest_version": "1.2.0",
   "latest_build": 3,
+  "version_code": 1,
   "min_supported_build": 1,
   "apk_url": "https://github.com/codewithyogeshh/HABIT-NOVA.APK/raw/main/apk/habit-nova-release.apk",
+  "sha256": "c2ddbe6b1f84cab09dd87945631e7fe275f6f4cc35a784d86097243330791e80",
   "notes": [
     "Streak freeze — skip one bad day without losing your streak, buy more with XP",
     "Smart reminders warn you before a streak is at risk",

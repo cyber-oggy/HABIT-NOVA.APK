@@ -35,4 +35,10 @@ class AppUpdateConfig {
   // SharedPreferences keys (namespaced so they never clash with app settings).
   static const String lastCheckKey = 'app_update_last_check_v1';
   static const String snoozeKey = 'app_update_snoozed_until_v1';
+
+  /// Last manifest body that parsed cleanly.
+  ///
+  /// A required update must stay required when the device is offline, so the
+  /// previous answer is reused when the manifest cannot be fetched.
+  static const String lastManifestKey = 'app_update_last_manifest_v1';
 }

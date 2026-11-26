@@ -560,6 +560,8 @@ class MainActivity : FlutterActivity() {
 
                     val path = call.argument<String>("path")
 
+                    val expectedCode = (call.argument<Number>("expectedVersionCode"))?.toLong()
+
                     if (path.isNullOrBlank()) {
 
                         result.error("BAD_PATH", "Missing APK path", null)
@@ -576,21 +578,51 @@ class MainActivity : FlutterActivity() {
 
                             } else {
 
-                                val apkUri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apkFile)
+                                // The download is checked against the manifest before the
 
-                                val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                                // installer is opened: a stale or swapped package would
 
-                                    setDataAndType(apkUri, "application/vnd.android.package-archive")
+                                // otherwise fail inside Android with a generic message.
 
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                val archive = packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
 
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                val archiveCode = archive?.let { versionCodeOf(it) }
+
+                                if (archive == null || archiveCode == null) {
+
+                                    result.error("BAD_APK", "The update file is not a valid app package.", null)
+
+                                } else if (expectedCode != null && archiveCode != expectedCode) {
+
+                                    result.error(
+
+                                        "VERSION_MISMATCH",
+
+                                        "This update file is build $archiveCode, but build $expectedCode was published. Please try again later.",
+
+                                        null
+
+                                    )
+
+                                } else {
+
+                                    val apkUri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apkFile)
+
+                                    val installIntent = Intent(Intent.ACTION_VIEW).apply {
+
+                                        setDataAndType(apkUri, "application/vnd.android.package-archive")
+
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                                    }
+
+                                    startActivity(installIntent)
+
+                                    result.success(true)
 
                                 }
-
-                                startActivity(installIntent)
-
-                                result.success(true)
 
                             }
 
@@ -663,6 +695,23 @@ class MainActivity : FlutterActivity() {
             ))
 
             intent.removeExtra("blocked_package")
+
+        }
+
+    }
+
+
+
+    private fun versionCodeOf(info: android.content.pm.PackageInfo): Long {
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+
+            info.longVersionCode
+
+        } else {
+
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
 
         }
 
