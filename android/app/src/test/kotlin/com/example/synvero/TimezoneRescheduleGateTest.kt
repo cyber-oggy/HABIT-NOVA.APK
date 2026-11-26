@@ -1,6 +1,7 @@
 package com.example.synvero
 
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -49,6 +50,56 @@ class TimezoneRescheduleGateTest {
         )
         assertTrue(
             TimezoneRescheduleGate.shouldStart(PendingReminderState.UNKNOWN, engineBusy = false)
+        )
+    }
+
+    @Test
+    fun `a missing or blank stored plan is not pending`() {
+        assertEquals(
+            PendingReminderState.NONE,
+            TimezoneRescheduleReceiver.pendingStateOf(null)
+        )
+        assertEquals(
+            PendingReminderState.NONE,
+            TimezoneRescheduleReceiver.pendingStateOf("")
+        )
+        assertEquals(
+            PendingReminderState.NONE,
+            TimezoneRescheduleReceiver.pendingStateOf("   ")
+        )
+        assertEquals(
+            PendingReminderState.NONE,
+            TimezoneRescheduleReceiver.pendingStateOf(false)
+        )
+        assertEquals(
+            PendingReminderState.NONE,
+            TimezoneRescheduleReceiver.pendingStateOf(0)
+        )
+    }
+
+    @Test
+    fun `a stored plan is pending whatever type it was written as`() {
+        assertEquals(
+            PendingReminderState.PENDING,
+            TimezoneRescheduleReceiver.pendingStateOf(
+                """{"scheduledAt":"2026-11-26T20:00:00+05:30"}"""
+            )
+        )
+        assertEquals(
+            PendingReminderState.PENDING,
+            TimezoneRescheduleReceiver.pendingStateOf(true)
+        )
+        assertEquals(
+            PendingReminderState.PENDING,
+            TimezoneRescheduleReceiver.pendingStateOf(1)
+        )
+    }
+
+    @Test
+    fun `an unreadable shape stays unknown so the nudge is not dropped`() {
+        assertEquals(
+            PendingReminderState.UNKNOWN,
+            TimezoneRescheduleReceiver.pendingStateOf(listOf("unexpected"))
         )
     }
 
