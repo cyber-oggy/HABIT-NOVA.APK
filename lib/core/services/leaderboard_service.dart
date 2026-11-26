@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:synvero/core/services/gamification_service.dart';
+import 'package:synvero/core/services/streak_freeze_service.dart';
 import 'package:synvero/core/services/supabase_service.dart';
 
 /// Leaderboard member model representing a real registered HabitNova user.
@@ -227,7 +228,7 @@ class LeaderboardService {
     } catch (_) {}
 
     // 4. Push current user's live progress to cloud in background
-    _syncUserToCloud(
+    syncUserToCloud(
       id: currentUserId,
       username: effectiveUsername,
       avatarPath: portableAvatar,
@@ -242,16 +243,30 @@ class LeaderboardService {
     return list;
   }
 
+  /// The freeze bank as it should travel to the cloud: never negative, never
+  /// above the cap the app allows locally.
+  static int freezeCountForCloud(int? stored) =>
+      (stored ?? 0).clamp(0, StreakFreezeService.maxFreezes);
+
   /// Pushes user's stats to Firestore community_leaderboard
-  static Future<void> _syncUserToCloud({
+  ///
+  /// [client] lets tests capture the request; production leaves it null.
+  static Future<void> syncUserToCloud({
     required String id,
     required String username,
     required String avatarPath,
     required int xp,
     required int streakDays,
     required String badgeTitle,
+    http.Client? client,
   }) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final uid = SupabaseService.user?.id ?? 'guest';
+      final freezes = freezeCountForCloud(
+        prefs.getInt('user_${uid}_streak_freezes_v1'),
+      );
+
       final portableAvatar = await _ensurePortableAvatar(avatarPath);
       final url = '$_firestoreBaseUrl/$id?key=$_firestoreApiKey';
       final body = jsonEncode({
@@ -261,20 +276,28 @@ class LeaderboardService {
           'avatarPath': {'stringValue': portableAvatar},
           'xp': {'integerValue': xp.toString()},
           'streakDays': {'integerValue': streakDays.toString()},
+          // Streak freezes are part of the account's progress: without this
+          // a restore brings back the streak but an empty freeze bank.
+          'streakFreezes': {'integerValue': freezes.toString()},
           'badgeTitle': {'stringValue': badgeTitle},
           'updatedAt': {'stringValue': DateTime.now().toIso8601String()},
         }
       });
 
-      await http
-          .patch(
-            Uri.parse(url),
-            headers: {'Content-Type': 'application/json'},
-            body: body,
-          )
-          .timeout(const Duration(seconds: 5));
+      final httpClient = client ?? http.Client();
+      try {
+        await httpClient
+            .patch(
+              Uri.parse(url),
+              headers: {'Content-Type': 'application/json'},
+              body: body,
+            )
+            .timeout(const Duration(seconds: 5));
+      } finally {
+        if (client == null) httpClient.close();
+      }
     } catch (e) {
-      debugPrint('LeaderboardService _syncUserToCloud error: $e');
+      debugPrint('LeaderboardService syncUserToCloud error: $e');
     }
   }
 
@@ -285,6 +308,7 @@ class LeaderboardService {
     String? avatarPath,
     int? xp,
     int? streak,
+    http.Client? client,
   }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -313,13 +337,14 @@ class LeaderboardService {
       final levelInfo = GamificationService.getLevelInfo(effectiveXP);
       final badgeTitle = '${levelInfo.title} ${levelInfo.badgeEmoji}';
 
-      await _syncUserToCloud(
+      await syncUserToCloud(
         id: currentUserId,
         username: effectiveName,
         avatarPath: effectiveAvatar,
         xp: effectiveXP,
         streakDays: effectiveStreak,
         badgeTitle: badgeTitle,
+        client: client,
       );
     } catch (e) {
       debugPrint('LeaderboardService.syncCurrentUser error: $e');
@@ -352,7 +377,7 @@ class LeaderboardService {
       final levelInfo = GamificationService.getLevelInfo(totalXP);
       final badgeTitle = '${levelInfo.title} ${levelInfo.badgeEmoji}';
 
-      await _syncUserToCloud(
+      await syncUserToCloud(
         id: currentUserId,
         username: currentUsername,
         avatarPath: avatar,

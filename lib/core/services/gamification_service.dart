@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:synvero/core/services/leaderboard_service.dart';
+import 'package:synvero/core/services/streak_freeze_service.dart';
 import 'package:synvero/core/services/supabase_service.dart';
 
 /// Represents a gamification achievement badge in HabbitNova.
@@ -200,10 +201,16 @@ class GamificationService {
                     fields['streakDays']?['integerValue']?.toString() ?? '0',
                   ) ??
                   0;
+          final cloudFreezes =
+              int.tryParse(
+                    fields['streakFreezes']?['integerValue']?.toString() ?? '0',
+                  ) ??
+                  0;
           await applyCloudProgress(
             userId: userId,
             cloudXP: cloudXP,
             cloudStreak: cloudStreak,
+            cloudFreezes: cloudFreezes,
           );
         }
       }
@@ -227,6 +234,7 @@ class GamificationService {
     required String userId,
     required int cloudXP,
     required int cloudStreak,
+    int cloudFreezes = 0,
   }) async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -242,6 +250,20 @@ class GamificationService {
     if (cloudStreak > localStreak) {
       await prefs.setInt('user_${userId}_streak_days', cloudStreak);
       await prefs.setInt('app_streak_days', cloudStreak);
+    }
+
+    // Freezes are progress too: a restored streak with an empty bank would
+    // make the user think their freezes were lost. Same max() rule as XP and
+    // the streak, capped at the bank limit so a bad record can't inflate it.
+    // The frozen-day history is local and is intentionally left alone.
+    final localFreezes =
+        prefs.getInt('user_${userId}_streak_freezes_v1') ?? 0;
+    final restoredFreezes = cloudFreezes.clamp(0, StreakFreezeService.maxFreezes);
+    if (restoredFreezes > localFreezes) {
+      await prefs.setInt(
+        'user_${userId}_streak_freezes_v1',
+        restoredFreezes,
+      );
     }
   }
 
