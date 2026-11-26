@@ -23,6 +23,9 @@ class AppUpdateConfig {
   /// How long to wait for the manifest before giving up silently.
   static const Duration requestTimeout = Duration(seconds: 8);
 
+  /// How long the in-app APK download may run before it is abandoned.
+  static const Duration downloadTimeout = Duration(minutes: 5);
+
   /// Don't hit the network more often than this.
   static const Duration checkInterval = Duration(hours: 6);
 

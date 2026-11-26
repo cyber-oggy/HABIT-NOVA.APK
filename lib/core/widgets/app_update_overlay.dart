@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:synvero/app/theme/app_colors.dart';
+import 'package:synvero/core/services/app_update_installer.dart';
 import 'package:synvero/core/services/app_update_service.dart';
 
 /// Shows the "update available" card on top of the app whenever
@@ -19,6 +20,7 @@ class _AppUpdateOverlayState extends State<AppUpdateOverlay> {
 
   void _later() {
     setState(() => _dismissed = true);
+    AppUpdateInstaller.reset();
     AppUpdateService.snooze();
   }
 
@@ -179,14 +181,7 @@ class _UpdateCard extends StatelessWidget {
                         style: textTheme.bodySmall,
                       ),
                       const SizedBox(height: 18),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: () => AppUpdateService.openDownload(info),
-                          icon: const Icon(Icons.download_rounded, size: 20),
-                          label: const Text('Update now'),
-                        ),
-                      ),
+                      _UpdateActions(info: info),
                       if (onLater != null)
                         Center(
                           child: TextButton(
@@ -211,6 +206,106 @@ class _UpdateCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Primary update action: downloads inside the app and opens the system
+/// installer, with progress and a browser fallback if anything fails.
+class _UpdateActions extends StatelessWidget {
+  const _UpdateActions({required this.info});
+
+  final AppUpdateInfo info;
+
+  String _label(UpdateInstallStage stage) {
+    switch (stage) {
+      case UpdateInstallStage.downloading:
+        return 'Downloading…';
+      case UpdateInstallStage.launching:
+        return 'Opening installer…';
+      case UpdateInstallStage.needsPermission:
+        return 'Allow installs & update';
+      case UpdateInstallStage.failed:
+        return 'Try again';
+      case UpdateInstallStage.idle:
+        return 'Update now';
+    }
+  }
+
+  IconData _icon(UpdateInstallStage stage) {
+    switch (stage) {
+      case UpdateInstallStage.downloading:
+        return Icons.downloading_rounded;
+      case UpdateInstallStage.launching:
+        return Icons.hourglass_top_rounded;
+      case UpdateInstallStage.needsPermission:
+        return Icons.lock_open_rounded;
+      case UpdateInstallStage.failed:
+        return Icons.refresh_rounded;
+      case UpdateInstallStage.idle:
+        return Icons.system_update_rounded;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final TextTheme textTheme = Theme.of(context).textTheme;
+
+    return ValueListenableBuilder<UpdateInstallState>(
+      valueListenable: AppUpdateInstaller.state,
+      builder: (BuildContext context, UpdateInstallState state, Widget? _) {
+        final bool downloading = state.stage == UpdateInstallStage.downloading;
+        final bool hasProgress = state.progress > 0 && state.progress < 1;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            if (downloading)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    value: hasProgress ? state.progress : null,
+                    minHeight: 6,
+                    backgroundColor: scheme.primary.withValues(alpha: 0.14),
+                  ),
+                ),
+              ),
+            if (state.message.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  state.message,
+                  textAlign: TextAlign.center,
+                  style: textTheme.bodySmall?.copyWith(
+                    color: state.stage == UpdateInstallStage.failed
+                        ? scheme.error
+                        : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: state.isBusy
+                    ? null
+                    : () => AppUpdateInstaller.start(info),
+                icon: Icon(_icon(state.stage), size: 20),
+                label: Text(_label(state.stage)),
+              ),
+            ),
+            if (state.stage == UpdateInstallStage.failed)
+              Center(
+                child: TextButton(
+                  onPressed: () => AppUpdateService.openDownload(info),
+                  child: const Text('Download in browser instead'),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

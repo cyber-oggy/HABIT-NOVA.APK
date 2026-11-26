@@ -48,6 +48,8 @@ class MainActivity : FlutterActivity() {
 
     private val USAGE_STATS_CHANNEL = "com.example.synvero/usage_stats"
 
+    private val APP_UPDATE_CHANNEL = "com.example.synvero/app_update"
+
 
 
     private var usageStatsChannel: MethodChannel? = null
@@ -477,6 +479,128 @@ class MainActivity : FlutterActivity() {
                 "getAllLimits" -> {
 
                     result.success(UsageStatsHelper.getAllLimits(this))
+
+                }
+
+                else -> result.notImplemented()
+
+            }
+
+        }
+
+
+
+        // 6. In-app APK Update Channel (download + system installer)
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APP_UPDATE_CHANNEL).setMethodCallHandler { call, result ->
+
+            when (call.method) {
+
+                "getUpdateDir" -> {
+
+                    val dir = java.io.File(cacheDir, "updates")
+
+                    if (!dir.exists()) dir.mkdirs()
+
+                    result.success(dir.absolutePath)
+
+                }
+
+                "canInstallPackages" -> {
+
+                    val allowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+                        packageManager.canRequestPackageInstalls()
+
+                    } else {
+
+                        true
+
+                    }
+
+                    result.success(allowed)
+
+                }
+
+                "openInstallSettings" -> {
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+                        try {
+
+                            val settingsIntent = Intent(
+
+                                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+
+                                android.net.Uri.parse("package:$packageName")
+
+                            )
+
+                            settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                            startActivity(settingsIntent)
+
+                            result.success(true)
+
+                        } catch (e: Exception) {
+
+                            result.error("SETTINGS_ERROR", e.localizedMessage, null)
+
+                        }
+
+                    } else {
+
+                        result.success(false)
+
+                    }
+
+                }
+
+                "installApk" -> {
+
+                    val path = call.argument<String>("path")
+
+                    if (path.isNullOrBlank()) {
+
+                        result.error("BAD_PATH", "Missing APK path", null)
+
+                    } else {
+
+                        try {
+
+                            val apkFile = java.io.File(path)
+
+                            if (!apkFile.exists()) {
+
+                                result.error("MISSING_FILE", "APK not found", null)
+
+                            } else {
+
+                                val apkUri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apkFile)
+
+                                val installIntent = Intent(Intent.ACTION_VIEW).apply {
+
+                                    setDataAndType(apkUri, "application/vnd.android.package-archive")
+
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                                }
+
+                                startActivity(installIntent)
+
+                                result.success(true)
+
+                            }
+
+                        } catch (e: Exception) {
+
+                            result.error("INSTALL_ERROR", e.localizedMessage, null)
+
+                        }
+
+                    }
 
                 }
 
