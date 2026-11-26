@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'package:synvero/core/config/app_update_config.dart';
 import 'package:synvero/core/services/app_update_service.dart';
@@ -73,13 +73,57 @@ class AppUpdateInstaller {
   static final ValueNotifier<UpdateInstallState> state =
       ValueNotifier<UpdateInstallState>(const UpdateInstallState());
 
+  /// How long the installer hand-off may stay "busy" before it is released.
+  static const Duration installerGrace = Duration(seconds: 20);
+
+  static Timer? _resetTimer;
+  static bool _observingLifecycle = false;
+
   static Future<void> reset() async {
+    _resetTimer?.cancel();
+    _resetTimer = null;
     state.value = const UpdateInstallState();
+  }
+
+  /// Releases a finished or abandoned installer hand-off so the button works
+  /// again.
+  ///
+  /// The system installer cannot tell us whether the user installed or backed
+  /// out, so coming back to the app (or the grace timer expiring) is the signal
+  /// that this attempt is over.
+  @visibleForTesting
+  static void onAppResumed() {
+    _resetTimer?.cancel();
+    _resetTimer = null;
+    if (_isFinishedAttempt(state.value.stage)) {
+      state.value = const UpdateInstallState();
+    }
+  }
+
+  static bool _isFinishedAttempt(UpdateInstallStage stage) =>
+      stage == UpdateInstallStage.launching ||
+      stage == UpdateInstallStage.needsPermission;
+
+  static void _watchLifecycle() {
+    if (_observingLifecycle) return;
+    _observingLifecycle = true;
+    WidgetsBinding.instance.addObserver(_UpdateLifecycleObserver());
+  }
+
+  static void _armResetTimer() {
+    _resetTimer?.cancel();
+    _resetTimer = Timer(installerGrace, () {
+      _resetTimer = null;
+      if (_isFinishedAttempt(state.value.stage)) {
+        state.value = const UpdateInstallState();
+      }
+    });
   }
 
   /// Runs the whole flow: permission check, download, then launch the installer.
   static Future<void> start(AppUpdateInfo info) async {
     if (state.value.isBusy) return;
+    _watchLifecycle();
     if (!AppUpdateService.isSupportedPlatform) {
       state.value = const UpdateInstallState(
         stage: UpdateInstallStage.failed,
@@ -98,6 +142,7 @@ class AppUpdateInstaller {
               'Allow "Install unknown apps" for HabitNova, then tap update again.',
         );
         await _channel.invokeMethod<bool>('openInstallSettings');
+        _armResetTimer();
         return;
       }
 
@@ -138,6 +183,9 @@ class AppUpdateInstaller {
       state.value = state.value.copyWith(
         message: 'Confirm the install in the system prompt.',
       );
+      // If the user cancels in the system sheet, nothing else tells us the
+      // attempt ended; release the busy state after a grace period.
+      _armResetTimer();
     } on PlatformException catch (e) {
       state.value = UpdateInstallState(
         stage: UpdateInstallStage.failed,
@@ -198,6 +246,16 @@ class AppUpdateInstaller {
       }
     } finally {
       client.close();
+    }
+  }
+}
+
+/// Resets an abandoned update attempt when the user comes back to the app.
+class _UpdateLifecycleObserver extends WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      AppUpdateInstaller.onAppResumed();
     }
   }
 }

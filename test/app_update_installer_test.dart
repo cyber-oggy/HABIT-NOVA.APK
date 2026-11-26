@@ -59,6 +59,44 @@ void main() {
     expect(AppUpdateInstaller.state.value.message, isNotEmpty);
   });
 
+  group('abandoned installer hand-off', () {
+    test('coming back to the app releases a pending install', () {
+      AppUpdateInstaller.state.value = const UpdateInstallState(
+        stage: UpdateInstallStage.launching,
+      );
+
+      AppUpdateInstaller.onAppResumed();
+
+      expect(AppUpdateInstaller.state.value.stage, UpdateInstallStage.idle);
+      expect(AppUpdateInstaller.state.value.isBusy, isFalse);
+    });
+
+    test('coming back after granting permission clears the stale message', () {
+      AppUpdateInstaller.state.value = const UpdateInstallState(
+        stage: UpdateInstallStage.needsPermission,
+        message: 'Allow installs',
+      );
+
+      AppUpdateInstaller.onAppResumed();
+
+      expect(AppUpdateInstaller.state.value.stage, UpdateInstallStage.idle);
+      expect(AppUpdateInstaller.state.value.message, isEmpty);
+    });
+
+    test('a download in progress is left running', () {
+      AppUpdateInstaller.state.value = const UpdateInstallState(
+        stage: UpdateInstallStage.downloading,
+        progress: 0.4,
+      );
+
+      AppUpdateInstaller.onAppResumed();
+
+      expect(AppUpdateInstaller.state.value.stage,
+          UpdateInstallStage.downloading);
+      expect(AppUpdateInstaller.state.value.progress, 0.4);
+    });
+  });
+
   test('does not start twice while a download is in flight', () async {
     int permissionChecks = 0;
     messenger.setMockMethodCallHandler(channel, (MethodCall call) async {
