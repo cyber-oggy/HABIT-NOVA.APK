@@ -8,6 +8,7 @@ import 'package:synvero/core/services/quote_service.dart';
 import 'package:synvero/core/services/streak_badge_service.dart';
 import 'package:synvero/core/services/streak_freeze_service.dart';
 import 'package:synvero/core/services/streak_risk_service.dart';
+import 'package:synvero/core/services/streak_state_validator.dart';
 import 'package:synvero/core/widgets/celebration_dialog.dart';
 import 'package:synvero/core/widgets/streak_freeze_card.dart';
 import 'package:flutter/material.dart';
@@ -200,6 +201,11 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (user != null) {
         await GamificationService.restoreFromCloud(user.id);
       }
+
+      // Repair impossible bookkeeping before anything reads it: a streak with
+      // no day, a day in the future, an over-full freeze bank or a global
+      // streak that disagrees with this account's own.
+      await StreakStateValidator.validateAndRepair(userId: currentUserId);
 
       // Check and execute midnight habit reset if date changed
       await HabitDailyService.verifyAndPerformMidnightReset(currentUserId);
