@@ -8,12 +8,13 @@ import org.junit.Test
 
 /**
  * JVM tests for the pure part of [TimezoneRescheduleReceiver]: whether a
- * broadcast is worth starting an engine for, and the single-engine slot.
+ * timezone/clock broadcast is worth starting an engine for, and the single
+ * engine slot behind it.
  *
  * Run where the Android SDK is available:
  *   cd android && ./gradlew :app:testDebugUnitTest
  */
-class TimezoneRescheduleGateTest {
+class TimezoneRescheduleReceiverTest {
 
     @After
     fun releaseSlot() {
@@ -22,34 +23,50 @@ class TimezoneRescheduleGateTest {
     }
 
     @Test
-    fun `a pending reminder with no engine running starts the isolate`() {
-        assertTrue(TimezoneRescheduleGate.shouldStart(hasPendingReminder = true, engineBusy = false))
+    fun `nothing pending never takes the slot`() {
+        assertFalse(
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.NONE)
+        )
     }
 
     @Test
-    fun `nothing pending never starts an engine`() {
-        assertFalse(TimezoneRescheduleGate.shouldStart(hasPendingReminder = false, engineBusy = false))
-        assertFalse(TimezoneRescheduleGate.shouldStart(hasPendingReminder = false, engineBusy = true))
+    fun `a pending reminder takes the slot`() {
+        assertTrue(
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.PENDING)
+        )
+    }
+
+    @Test
+    fun `an unreadable store still re-plans rather than dropping the nudge`() {
+        assertTrue(
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.UNKNOWN)
+        )
     }
 
     @Test
     fun `a second broadcast while an engine runs is ignored`() {
-        assertFalse(TimezoneRescheduleGate.shouldStart(hasPendingReminder = true, engineBusy = true))
+        assertTrue(
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.PENDING)
+        )
         assertFalse(
-            TimezoneRescheduleGate.shouldStart(PendingReminderState.PENDING, engineBusy = true)
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.PENDING)
+        )
+        assertFalse(
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.UNKNOWN)
+        )
+        assertFalse(
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.NONE)
         )
     }
 
     @Test
-    fun `only a known-empty store skips the engine`() {
-        assertFalse(
-            TimezoneRescheduleGate.shouldStart(PendingReminderState.NONE, engineBusy = false)
-        )
+    fun `releasing the slot allows the next broadcast through`() {
         assertTrue(
-            TimezoneRescheduleGate.shouldStart(PendingReminderState.PENDING, engineBusy = false)
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.PENDING)
         )
+        TimezoneRescheduleReceiver.releaseEngineSlot()
         assertTrue(
-            TimezoneRescheduleGate.shouldStart(PendingReminderState.UNKNOWN, engineBusy = false)
+            TimezoneRescheduleReceiver.tryAcquireForBroadcast(PendingReminderState.PENDING)
         )
     }
 
@@ -101,17 +118,5 @@ class TimezoneRescheduleGateTest {
             PendingReminderState.UNKNOWN,
             TimezoneRescheduleReceiver.pendingStateOf(listOf("unexpected"))
         )
-    }
-
-    @Test
-    fun `only one engine slot can be claimed at a time`() {
-        assertTrue(TimezoneRescheduleReceiver.claimEngineSlot())
-        assertFalse(TimezoneRescheduleReceiver.claimEngineSlot())
-        assertTrue(TimezoneRescheduleReceiver.isEngineBusy())
-
-        TimezoneRescheduleReceiver.releaseEngineSlot()
-
-        assertFalse(TimezoneRescheduleReceiver.isEngineBusy())
-        assertTrue(TimezoneRescheduleReceiver.claimEngineSlot())
     }
 }

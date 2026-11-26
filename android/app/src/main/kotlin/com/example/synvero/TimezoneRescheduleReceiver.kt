@@ -23,24 +23,6 @@ internal enum class PendingReminderState {
 }
 
 /**
- * Decides whether a timezone/clock broadcast is worth booting a Flutter engine.
- *
- * Starting an engine means a cold app process and a Dart isolate, so it must
- * only happen when there is something to re-plan and no engine is already
- * running. Only a positively absent plan skips the work: if the stored value
- * cannot be read, the reminder is re-planned rather than silently dropped.
- *
- * Kept as a pure object so it can be unit tested on the JVM.
- */
-internal object TimezoneRescheduleGate {
-    fun shouldStart(hasPendingReminder: Boolean, engineBusy: Boolean): Boolean =
-        hasPendingReminder && !engineBusy
-
-    fun shouldStart(state: PendingReminderState, engineBusy: Boolean): Boolean =
-        shouldStart(state != PendingReminderState.NONE, engineBusy)
-}
-
-/**
  * Re-plans the pending "streak at risk" reminder when the device timezone or
  * clock changes.
  *
@@ -121,21 +103,13 @@ class TimezoneRescheduleReceiver : BroadcastReceiver() {
                 PendingReminderState.UNKNOWN
             }
 
-        internal fun isEngineBusy(): Boolean = synchronized(stateLock) { engineBusy }
-
-        /** Claims the single engine slot; false when one is already running. */
-        internal fun claimEngineSlot(): Boolean = synchronized(stateLock) {
-            if (engineBusy) {
-                false
-            } else {
-                engineBusy = true
-                true
-            }
-        }
-
         internal fun releaseEngineSlot() {
             synchronized(stateLock) { engineBusy = false }
         }
+
+        /** Reads the pending plan, then decides and claims in one step. */
+        internal fun tryAcquireForBroadcast(context: Context): Boolean =
+            tryAcquireForBroadcast(pendingReminderState(context))
 
         /**
          * Preflight plus slot claim as one step.
@@ -146,9 +120,8 @@ class TimezoneRescheduleReceiver : BroadcastReceiver() {
          * produce one engine, and a broadcast with nothing to do touches no
          * Flutter class at all.
          */
-        internal fun tryAcquireForBroadcast(context: Context): Boolean {
-            val state = pendingReminderState(context)
-            return synchronized(stateLock) {
+        internal fun tryAcquireForBroadcast(state: PendingReminderState): Boolean =
+            synchronized(stateLock) {
                 when {
                     engineBusy -> false
                     state == PendingReminderState.NONE -> false
@@ -158,7 +131,6 @@ class TimezoneRescheduleReceiver : BroadcastReceiver() {
                     }
                 }
             }
-        }
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
