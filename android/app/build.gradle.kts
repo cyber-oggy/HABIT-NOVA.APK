@@ -78,4 +78,7 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+
+    // Plain JVM unit tests for pure Kotlin decisions (no Android framework).
+    testImplementation("junit:junit:4.13.2")
 }
