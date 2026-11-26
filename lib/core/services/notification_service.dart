@@ -293,6 +293,27 @@ class NotificationService {
     }
   }
 
+  /// Minimal setup for a background isolate that only needs to schedule.
+  ///
+  /// Used by [habitNovaTimezoneReschedule], which runs when Android reports a
+  /// timezone or clock change: it has no UI, no navigation and no alarm
+  /// listeners, so it must not run the full [init].
+  static Future<void> initializeForBackground() async {
+    if (kIsWeb) return;
+    tz.initializeTimeZones();
+    _setupLocalTimezone();
+    await _notificationsPlugin.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+        iOS: DarwinInitializationSettings(
+          requestAlertPermission: false,
+          requestBadgePermission: false,
+          requestSoundPermission: false,
+        ),
+      ),
+    );
+  }
+
   /// Explicitly requests notification & exact alarm permissions on Android 13+.
   static Future<bool> requestPermissions() async {
     try {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:synvero/core/services/gamification_service.dart';
@@ -51,6 +53,12 @@ class StreakRiskReminderService {
       'user_${userId}_streak_risk_hours_v1';
   static String _lastRemindedKey(String userId) =>
       'user_${userId}_streak_risk_last_reminded_v1';
+
+  /// Last planned nudge (owner, remaining habits, streak, planned day).
+  ///
+  /// A background isolate can start when the phone's timezone changes, so the
+  /// plan has to be re-creatable without the dashboard being open.
+  static const String pendingKey = 'streak_risk_pending_v1';
 
   static String formatDate(DateTime date) {
     final d = DateTime(date.year, date.month, date.day);
@@ -183,15 +191,136 @@ class StreakRiskReminderService {
         scheduledDate: plan.fireAt,
       );
       await prefs.setString(_lastRemindedKey(uid), formatDate(moment));
+      await prefs.setString(
+        pendingKey,
+        jsonEncode(<String, Object>{
+          'uid': uid,
+          'remaining': plan.remainingHabits,
+          'streak': plan.streakDays,
+          'reminded': formatDate(moment),
+        }),
+      );
     } catch (e) {
       debugPrint('StreakRiskReminderService.refreshForToday error: $e');
     }
   }
 
+  /// Re-plans the pending nudge in the device's *current* timezone.
+  ///
+  /// Android fires `ACTION_TIMEZONE_CHANGED` / `ACTION_TIME_SET` and the native
+  /// receiver starts a background isolate for this method, so the reminder
+  /// moves to the new local wall-clock time without the user opening the app.
+  /// Scheduled alarms themselves keep the instant they were armed with, and the
+  /// notifications plugin re-arms them using the timezone name saved at
+  /// scheduling time, so the plan has to be built again from scratch.
+  ///
+  /// [scheduler] exists for tests; production uses the notification service.
+  static Future<StreakRiskPlan?> rescheduleAfterTimezoneChange({
+    DateTime? now,
+    StreakReminderScheduler? scheduler,
+  }) async {
+    final moment = now ?? DateTime.now();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(pendingKey);
+      if (raw == null) return null;
+
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return null;
+
+      final uid = decoded['uid'] as String? ??
+          GamificationService.currentUserId;
+      final remainingHabits = (decoded['remaining'] as num?)?.toInt() ?? 0;
+      final streakDays = (decoded['streak'] as num?)?.toInt() ?? 0;
+      final remindedOn = decoded['reminded'] as String?;
+
+      final today = formatDate(moment);
+      final remindedDay = DateTime.tryParse(remindedOn ?? '');
+
+      // A plan older than a day no longer describes today's situation; drop it
+      // instead of nudging with yesterday's numbers.
+      if (remindedDay != null) {
+        final age = DateTime(moment.year, moment.month, moment.day)
+            .difference(
+              DateTime(
+                remindedDay.year,
+                remindedDay.month,
+                remindedDay.day,
+              ),
+            )
+            .inDays;
+        if (age > 1 || age < 0) {
+          // Ahead of today means the date moved backwards: that local day was
+          // already nudged, so never repeat it.
+          await NotificationService.cancelHabitReminder(notificationId);
+          await prefs.remove(pendingKey);
+          return null;
+        }
+      }
+
+      // Replace whatever was pending: the old instant no longer matches the
+      // local time the user expects.
+      await NotificationService.cancelHabitReminder(notificationId);
+
+      final plan = planFor(
+        remainingHabits: remainingHabits,
+        streakDays: streakDays,
+        now: moment,
+        samples: await completionHours(userId: uid),
+        alreadyRemindedOn: null,
+      );
+      if (plan == null) {
+        await prefs.remove(pendingKey);
+        return null;
+      }
+
+      final copy = _copyFor(plan, LanguageService.currentLanguageCode);
+      final schedule = scheduler ?? _scheduleWithNotificationService;
+      await schedule(
+        id: notificationId,
+        title: copy.title,
+        body: copy.body,
+        scheduledDate: plan.fireAt,
+      );
+
+      await prefs.setString(_lastRemindedKey(uid), today);
+      await prefs.setString(
+        pendingKey,
+        jsonEncode(<String, Object>{
+          'uid': uid,
+          'remaining': plan.remainingHabits,
+          'streak': plan.streakDays,
+          'reminded': today,
+        }),
+      );
+      return plan;
+    } catch (e) {
+      debugPrint(
+        'StreakRiskReminderService.rescheduleAfterTimezoneChange error: $e',
+      );
+      return null;
+    }
+  }
+
+  static Future<void> _scheduleWithNotificationService({
+    required int id,
+    required String title,
+    required String body,
+    required DateTime scheduledDate,
+  }) =>
+      NotificationService.scheduleHabitReminder(
+        id: id,
+        title: title,
+        body: body,
+        scheduledDate: scheduledDate,
+      );
+
   /// Drops the pending nudge (e.g. after the user completes everything).
   static Future<void> cancel() async {
     try {
       await NotificationService.cancelHabitReminder(notificationId);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(pendingKey);
     } catch (e) {
       debugPrint('StreakRiskReminderService.cancel error: $e');
     }
@@ -228,3 +357,14 @@ class _ReminderCopy {
   final String title;
   final String body;
 }
+
+/// Hands a re-planned nudge to the OS scheduler.
+///
+/// Injected in tests so the timezone logic can be checked without platform
+/// channels.
+typedef StreakReminderScheduler = Future<void> Function({
+  required int id,
+  required String title,
+  required String body,
+  required DateTime scheduledDate,
+});

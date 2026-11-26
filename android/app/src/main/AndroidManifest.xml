@@ -78,6 +78,16 @@
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
             </intent-filter>
         </receiver>
+        <!-- Re-plans the streak reminder when the timezone or clock changes, so a
+             traveller is nudged at the new local time without opening the app. -->
+        <receiver
+            android:name=".TimezoneRescheduleReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.TIME_SET" />
+            </intent-filter>
+        </receiver>
         <!-- App Blocker Accessibility Service for Strict Focus Limits -->
         <service
             android:name=".AppBlockerAccessibilityService"
